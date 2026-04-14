@@ -1,0 +1,45 @@
+# MinimalOS – Alacritty Configuration
+# Colors are imported from cwal output — do not edit the import line.
+
+import = ["~/.config/alacritty/colors.toml"]
+
+[font]
+size = 12.0
+
+[font.normal]
+family = "Courier Prime"
+style  = "Medium"
+
+[font.bold]
+family = "Courier Prime"
+style  = "Bold"
+
+[font.italic]
+family = "Courier Prime"
+style  = "Medium Italic"
+
+[window]
+padding = { x = 10, y = 10 }
+decorations = "None"
+opacity = 0.92
+startup_mode = "Windowed"
+
+[scrolling]
+history = 10000
+multiplier = 3
+
+[cursor]
+style = { shape = "Block", blinking = "On" }
+blink_interval = 750
+
+[selection]
+save_to_clipboard = true
+
+[keyboard]
+bindings = [
+  { key = "V", mods = "Control|Shift", action = "Paste" },
+  { key = "C", mods = "Control|Shift", action = "Copy"  },
+  { key = "Plus",  mods = "Control", action = "IncreaseFontSize" },
+  { key = "Minus", mods = "Control", action = "DecreaseFontSize" },
+  { key = "Key0",  mods = "Control", action = "ResetFontSize"    },
+]
