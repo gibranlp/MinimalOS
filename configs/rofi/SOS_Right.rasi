@@ -1,5 +1,5 @@
 // ----- Global Properties -----
-@import "colors.rasi"
+@import "colors.rasi" ;
 
 
 // ----- Main Window -----
