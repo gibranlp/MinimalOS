@@ -1,10 +1,10 @@
-/*****----- Global Properties -----*****/
-@import "~/.cache/wal/SOS_Colors.rasi" 
+// ----- Global Properties -----
+@import "colors.rasi"
 
 
-/*****----- Main Window -----*****/
+// ----- Main Window -----
 window {
-    /* properties for window widget */
+    // properties for window widget
     location:                    northwest;
     margin:                      5px;
     fullscreen:                  false;
@@ -12,14 +12,14 @@ window {
     height:                      100%;
     border-radius:               2px;
 
-    /* properties for all widgets */
+    // properties for all widgets
     enabled:                     true;
     cursor:                      "default";
     background-color:            @background;
     padding:                     4px;
 }
 
-/*****----- Main Box -----*****/
+// ----- Main Box -----
 mainbox {
     enabled:                     true;
     spacing:                     0px;
@@ -36,7 +36,7 @@ listbox {
     children:                    [ "message", "listview" ];
 }
 
-/*****----- Inputbar -----*****/
+// ----- Inputbar -----
 inputbar {
     enabled:                     true;
     spacing:                     10px;
@@ -71,7 +71,7 @@ entry {
 }
 
 
-/*****----- Listview -----*****/
+// ----- Listview -----
 listview {
     enabled:                     true;
     columns:                     1;
@@ -91,7 +91,7 @@ listview {
     
 }
 
-/*****----- Elements -----*****/
+// ----- Elements -----
 element {
     enabled:                     true;
     spacing:                     10px;
@@ -139,7 +139,7 @@ element-text {
     horizontal-align:            0;
 }
 
-/*****----- Message -----*****/
+// ----- Message -----
 message {
     background-color:            transparent;
 }

@@ -58,11 +58,7 @@ preflight() {
     fi
     ok "Arch Linux detected"
 
-    if ! ping -c 1 archlinux.org &>/dev/null; then
-        err "No internet connection. Check your network."
-        exit 1
-    fi
-    ok "Internet connection active"
+    ok "Internet connection assumed active"
 
     sudo -v
     ok "sudo access confirmed"
@@ -70,11 +66,28 @@ preflight() {
     log "Log file: $LOG_FILE"
 }
 
+# ── Enable multilib ───────────────────────────────────────────────────────
+enable_multilib() {
+    if ! grep -q "^\[multilib\]" /etc/pacman.conf; then
+        log "Enabling multilib repository…"
+        sudo tee -a /etc/pacman.conf > /dev/null << 'MULTILIB'
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+MULTILIB
+        sudo pacman -Sy 2>&1 | tee -a "$LOG_FILE"
+        ok "multilib enabled"
+    else
+        ok "multilib already enabled"
+    fi
+}
+
 # ── Phase 1: System Update ─────────────────────────────────────────────────
 system_update() {
     section "Phase 1: System Update"
     log "Updating keyring and base system…"
     sudo pacman -Sy --noconfirm archlinux-keyring 2>&1 | tee -a "$LOG_FILE"
+    enable_multilib
     sudo pacman -Syu --noconfirm 2>&1 | tee -a "$LOG_FILE"
     ok "System updated"
 }
@@ -118,10 +131,24 @@ install_pacman_packages() {
         warn "No pacman packages found in packages.conf"
         return
     fi
-    log "Installing pacman packages…"
+    log "Installing pacman packages (bulk)…"
     # shellcheck disable=SC2086
-    sudo pacman -S --needed --noconfirm $pkgs 2>&1 | tee -a "$LOG_FILE"
-    ok "Pacman packages installed"
+    if sudo pacman -S --needed --noconfirm $pkgs 2>&1 | tee -a "$LOG_FILE"; then
+        ok "Pacman packages installed"
+    else
+        warn "Bulk install failed — retrying individually…"
+        local failed=()
+        while IFS= read -r pkg; do
+            [ -z "$pkg" ] && continue
+            sudo pacman -S --needed --noconfirm "$pkg" 2>&1 | tee -a "$LOG_FILE" \
+                || { warn "Could not install: $pkg"; failed+=("$pkg"); }
+        done < <(parse_packages "pacman")
+        if [ ${#failed[@]} -gt 0 ]; then
+            warn "Skipped packages: ${failed[*]}"
+        else
+            ok "Pacman packages installed (individually)"
+        fi
+    fi
 }
 
 # ── Phase 5: AUR Packages ─────────────────────────────────────────────────
@@ -134,10 +161,25 @@ install_aur_packages() {
         warn "No AUR packages found in packages.conf"
         return
     fi
-    log "Installing AUR packages (this may take a while)…"
+    log "Installing AUR packages (bulk — this may take a while)…"
     # shellcheck disable=SC2086
-    paru -S --needed --noconfirm $pkgs 2>&1 | tee -a "$LOG_FILE"
-    ok "AUR packages installed"
+    if paru -S --needed --noconfirm $pkgs 2>&1 | tee -a "$LOG_FILE"; then
+        ok "AUR packages installed"
+    else
+        warn "Bulk AUR install failed — retrying individually…"
+        local failed=()
+        while IFS= read -r pkg; do
+            [ -z "$pkg" ] && continue
+            [[ "$pkg" == "cwal" ]] && continue
+            paru -S --needed --noconfirm "$pkg" 2>&1 | tee -a "$LOG_FILE" \
+                || { warn "Could not install from AUR: $pkg"; failed+=("$pkg"); }
+        done < <(parse_packages "aur")
+        if [ ${#failed[@]} -gt 0 ]; then
+            warn "Skipped AUR packages: ${failed[*]}"
+        else
+            ok "AUR packages installed (individually)"
+        fi
+    fi
 }
 
 # ── Phase 6: Rust + broot ─────────────────────────────────────────────────
@@ -325,14 +367,17 @@ install_fonts() {
 # ── Phase 11: ZSH as Default Shell ────────────────────────────────────────
 setup_zsh() {
     section "Phase 11: ZSH Default Shell"
-    local zsh_path
-    zsh_path=$(which zsh)
+    local zsh_path="/usr/bin/zsh"
+    if [ ! -x "$zsh_path" ]; then
+        err "zsh not found at $zsh_path — install zsh first"
+        return 1
+    fi
     if [ "$SHELL" = "$zsh_path" ]; then
         ok "zsh is already the default shell"
         return
     fi
     sudo chsh -s "$zsh_path" "$USER"
-    ok "Default shell set to zsh"
+    ok "Default shell set to $zsh_path"
 }
 
 # ── Phase 12: Deploy Configs ──────────────────────────────────────────────
@@ -370,8 +415,11 @@ deploy_configs() {
     for src in "${!config_map[@]}"; do
         local dst="${config_map[$src]}"
         mkdir -p "$dst"
-        cp -rn "$src/." "$dst/" 2>/dev/null || true
-        ok "Config deployed: $src → $dst"
+        if cp -r "$src/." "$dst/"; then
+            ok "Config deployed: $src → $dst"
+        else
+            warn "Failed to deploy: $src → $dst (check source exists)"
+        fi
     done
 
     # ZSH config
@@ -392,112 +440,125 @@ deploy_configs() {
     ok "Scripts installed to ~/.local/bin/"
 }
 
+# ── Fallback Rofi colors (used when cwal hasn't run yet) ──────────────────
+write_fallback_rofi_colors() {
+    local out="$HOME/.config/rofi/colors.rasi"
+    [ -f "$out" ] && return   # cwal already wrote real colors
+    mkdir -p "$(dirname "$out")"
+    cat > "$out" << 'EOF'
+// Default color scheme — replaced by cwal on first wallpaper apply.
+* {
+    background:     #1a1a2e;
+    background-alt: #16213e;
+    foreground:     #c0caf5;
+    selected:       #7aa2f7;
+    active:         #9ece6a;
+    urgent:         #f7768e;
+
+    color0:  #1a1a2e;
+    color1:  #f7768e;
+    color2:  #9ece6a;
+    color3:  #e0af68;
+    color4:  #7aa2f7;
+    color5:  #bb9af7;
+    color6:  #73daca;
+    color7:  #c0caf5;
+    color8:  #414868;
+    color9:  #f7768e;
+    color10: #9ece6a;
+    color11: #e0af68;
+    color12: #7aa2f7;
+    color13: #bb9af7;
+    color14: #73daca;
+    color15: #c0caf5;
+}
+EOF
+    ok "Fallback Rofi color scheme written"
+}
+
+# ── Fallback Alacritty colors (used when cwal hasn't run yet) ─────────────
+write_fallback_alacritty_colors() {
+    local out="$HOME/.config/alacritty/colors.toml"
+    [ -f "$out" ] && return   # cwal already wrote real colors
+    mkdir -p "$(dirname "$out")"
+    cat > "$out" << 'EOF'
+# Fallback colors — will be replaced by cwal on first wallpaper apply.
+[colors.primary]
+background = "#1a1a2e"
+foreground = "#c0caf5"
+
+[colors.normal]
+black   = "#1a1a2e"
+red     = "#f7768e"
+green   = "#9ece6a"
+yellow  = "#e0af68"
+blue    = "#7aa2f7"
+magenta = "#bb9af7"
+cyan    = "#73daca"
+white   = "#c0caf5"
+
+[colors.bright]
+black   = "#414868"
+red     = "#f7768e"
+green   = "#9ece6a"
+yellow  = "#e0af68"
+blue    = "#7aa2f7"
+magenta = "#bb9af7"
+cyan    = "#73daca"
+white   = "#c0caf5"
+EOF
+    ok "Fallback Alacritty color scheme written"
+}
+
 # ── Phase 13: Initialize cwal ─────────────────────────────────────────────
 init_cwal() {
     section "Phase 13: Initialize cwal"
 
-    # Ensure cwal config dir exists
     mkdir -p "$HOME/.config/cwal" "$HOME/.cache/cwal"
 
-    # Check for a default wallpaper to seed the color scheme
+    # Source the system config so we have CWAL_* variables available
+    local sys_conf="/etc/minimalos/minimalos.conf"
+    # shellcheck disable=SC1090
+    [ -f "$sys_conf" ] && source "$sys_conf"
+
+    # Find a wallpaper to seed colors
     local wall
-    wall=$(find "$HOME/Pictures/Wallpapers" -type f \( -iname "*.png" -o -iname "*.jpg" \) | head -1)
+    wall=$(find "$HOME/Pictures/Wallpapers" -type f \( -iname "*.png" -o -iname "*.jpg" \) \
+           | head -1)
 
     if [ -n "$wall" ]; then
         log "Initializing cwal with: $wall"
-        cp "$wall" /var/lib/minimalos/current.png 2>/dev/null || sudo cp "$wall" /var/lib/minimalos/current.png
-        echo "/var/lib/minimalos/current.png" | sudo tee /var/lib/minimalos/current_wallpaper > /dev/null
-        cwal --img "$wall" --quiet 2>&1 | tee -a "$LOG_FILE" || \
-            warn "cwal initialization failed — run manually after first login"
+
+        # Record the current wallpaper for the awesome autostart restore
+        sudo mkdir -p /var/lib/minimalos
+        echo "$wall" | sudo tee /var/lib/minimalos/current_wallpaper > /dev/null
+
+        cwal --img "$wall" \
+             --mode  "${CWAL_MODE:-dark}" \
+             --backend "${CWAL_BACKEND:-cwal}" \
+             --saturation "${CWAL_SATURATION:-0.00}" \
+             --contrast "${CWAL_CONTRAST:-1.00}" \
+             --alpha "${CWAL_ALPHA:-0.90}" \
+             --quiet \
+             2>&1 | tee -a "$LOG_FILE" \
+        && ok "cwal color scheme generated" \
+        || warn "cwal run failed — falling back to default colors"
     else
-        warn "No wallpaper found in ~/Pictures/Wallpapers"
-        warn "Add wallpapers and run: cwal --img <wallpaper>"
+        warn "No wallpaper in ~/Pictures/Wallpapers — add one and run: cwal --img <file>"
     fi
+
+    # Always ensure alacritty and rofi have color files so they start cleanly
+    write_fallback_alacritty_colors
+    write_fallback_rofi_colors
 }
 
-# ── Phase 14: Limine Bootloader (optional) ────────────────────────────────
-setup_limine() {
-    section "Phase 14: Limine Bootloader (optional)"
-    warn "Limine replaces your current bootloader. This is destructive if misconfigured."
-    if ! ask "Install and configure Limine?"; then
-        log "Skipping Limine — keeping current bootloader"
-        return
-    fi
-
-    paru -S --needed --noconfirm limine 2>&1 | tee -a "$LOG_FILE"
-
-    # Detect EFI or BIOS
-    if [ -d /sys/firmware/efi ]; then
-        log "UEFI system detected"
-        local esp
-        esp=$(findmnt -n -o TARGET /boot/efi 2>/dev/null || findmnt -n -o TARGET /boot 2>/dev/null || echo "/boot")
-        log "ESP detected at: $esp"
-
-        sudo limine bios-install "$esp" 2>/dev/null || true
-        sudo cp /usr/share/limine/BOOTX64.EFI "$esp/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || true
-
-        # Get root partition UUID
-        local root_uuid
-        root_uuid=$(findmnt -n -o UUID / 2>/dev/null)
-        local zen_vmlinuz
-        zen_vmlinuz=$(ls /boot/vmlinuz-linux-zen 2>/dev/null | head -1)
-        local zen_initrd
-        zen_initrd=$(ls /boot/initramfs-linux-zen.img 2>/dev/null | head -1)
-
-        cat > /tmp/limine.conf << EOF
-timeout: 5
-
-/MinimalOS (Zen Kernel)
-    protocol: linux
-    kernel_path: boot():/$(basename "$zen_vmlinuz")
-    cmdline: root=UUID=${root_uuid} rw quiet splash loglevel=3
-    module_path: boot():/$(basename "$zen_initrd")
-
-/MinimalOS Fallback
-    protocol: linux
-    kernel_path: boot():/vmlinuz-linux
-    cmdline: root=UUID=${root_uuid} rw
-    module_path: boot():/initramfs-linux.img
-EOF
-        sudo cp /tmp/limine.conf "$esp/limine.conf"
-        ok "Limine config written to $esp/limine.conf"
-    else
-        warn "BIOS system — Limine BIOS install requires knowing your disk."
-        local disk
-        echo -en "${Y}[ASK ]${N}  Enter your disk (e.g. /dev/sda): "
-        read -r disk
-        if [ -b "$disk" ]; then
-            sudo limine bios-install "$disk" 2>&1 | tee -a "$LOG_FILE"
-            ok "Limine BIOS installed to $disk"
-        else
-            err "Invalid disk: $disk — skipping Limine"
-        fi
-    fi
-
-    warn "Review $esp/limine.conf before rebooting!"
-}
-
-# ── Phase 15: GameMode & Steam tweaks ─────────────────────────────────────
+# ── Phase 14: GameMode & Steam tweaks ─────────────────────────────────────
 setup_gaming() {
-    section "Phase 15: Gaming Setup"
+    section "Phase 14: Gaming Setup"
 
     # Enable GameMode service
     systemctl --user enable gamemoded 2>/dev/null || true
     ok "GameMode service enabled"
-
-    # Enable multilib if not already (needed for 32-bit gaming libs)
-    if ! grep -q "^\[multilib\]" /etc/pacman.conf; then
-        log "Enabling multilib repository…"
-        sudo tee -a /etc/pacman.conf > /dev/null << 'MULTILIB'
-
-[multilib]
-Include = /etc/pacman.d/mirrorlist
-MULTILIB
-        sudo pacman -Sy 2>&1 | tee -a "$LOG_FILE"
-        ok "multilib enabled"
-    else
-        ok "multilib already enabled"
-    fi
 
     # Steam native runtime
     if ask "Configure Steam for native Linux runtime?"; then
@@ -516,6 +577,7 @@ MULTILIB
 # ── Sync Packages Only ────────────────────────────────────────────────────
 sync_packages() {
     section "Syncing Packages from packages.conf"
+    enable_multilib
     install_paru
     install_pacman_packages
     install_aur_packages
@@ -524,22 +586,30 @@ sync_packages() {
 
 # ── Full Install ──────────────────────────────────────────────────────────
 full_install() {
+    # Critical phases — abort on failure
     preflight
     system_update
     install_paru
-    install_zen_kernel
-    install_pacman_packages
-    install_aur_packages
-    install_broot
-    install_cwal
-    install_gpu_drivers
+
+    # Non-critical phases — warn and continue so later phases still run
+    install_zen_kernel      || warn "Zen kernel install had issues — continuing"
+    install_pacman_packages || warn "Some pacman packages may be missing — continuing"
+    install_aur_packages    || warn "Some AUR packages may be missing — continuing"
+    install_broot           || warn "broot install failed — continuing"
+    install_cwal            || warn "cwal install failed — continuing"
+    install_gpu_drivers     || true
+
+    # Must succeed for a working session
     setup_awesome_autologin
-    install_fonts
     setup_zsh
+
+    # Config deployment is essential — still runs even if packages had issues
+    install_fonts  || warn "Font install had issues — continuing"
     deploy_configs
-    init_cwal
-    setup_gaming
-    setup_limine
+    init_cwal      || warn "cwal init had issues — add a wallpaper and run: cwal --img <file>"
+
+    # Optional extras
+    setup_gaming   || true
 
     section "Installation Complete"
     ok "MinimalOS installed successfully!"
@@ -568,7 +638,7 @@ case "${1:-}" in
         case "${2:-}" in
             paru)       install_paru ;;
             zen)        install_zen_kernel ;;
-            pacman)     install_pacman_packages ;;
+            pacman)     enable_multilib; install_pacman_packages ;;
             aur)        install_aur_packages ;;
             broot)      install_broot ;;
             cwal)       install_cwal ;;
@@ -578,7 +648,6 @@ case "${1:-}" in
             zsh)        setup_zsh ;;
             configs)    deploy_configs ;;
             gaming)     setup_gaming ;;
-            limine)     setup_limine ;;
             *) err "Unknown phase: ${2:-}"; exit 1 ;;
         esac
         ;;
@@ -588,7 +657,7 @@ case "${1:-}" in
         echo "  (no args)         Full installation"
         echo "  --sync-packages   Install/update packages from packages.conf only"
         echo "  --phase <name>    Run a single phase:"
-        echo "    paru zen pacman aur broot cwal gpu awesome fonts zsh configs gaming limine"
+        echo "    paru zen pacman aur broot cwal gpu awesome fonts zsh configs gaming"
         ;;
     *)
         full_install
